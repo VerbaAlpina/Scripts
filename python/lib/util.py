@@ -2,7 +2,7 @@ import pymysql
 import socket
 import os
 
-#A file with the following structure is needed:
+#A file "login" with the following structure is needed:
 # first line: 3312 user
 # second line: 3312 password
 # third line: 3306 user
