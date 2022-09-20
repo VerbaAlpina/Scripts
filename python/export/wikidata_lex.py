@@ -14,6 +14,65 @@ import sys
 sys.path.append(sys.path[0] + "/../lib")
 from util import conn_3312
 
+def get_type_list (conn):
+	with conn.cursor() as cur:
+		sql = "SELECT DISTINCT Id_Type, Type FROM z_ling WHERE Type_Kind = 'L' ORDER BY Id_Type ASC"
+		cur.execute(sql)
+		ldata = cur.fetchall()
+		
+		sql = "SELECT DISTINCT Id_morph_Typ, l.Quelle, Sprache FROM VTBL_morph_Typ_Lemma JOIN Lemmata l USING (Id_Lemma) JOIN Bibliographie ON Abkuerzung = l.Quelle WHERE Subvocem != '<vacat>'"
+		cur.execute(sql)
+		refData = cur.fetchall()
+		
+		refMap = {}
+		for (mid, source, lang) in refData:
+			if mid not in refMap:
+				refMap[mid] = []
+				
+			refMap[mid].append((source, lang))
+		
+		for (i, data) in enumerate(ldata):
+			mid = data[0]
+			orth = data[1]
+			
+			lemma_langs = refMap.get(mid, [])
+			
+			langs = []
+			for (source, llang) in lemma_langs:
+				if source != "VA" and llang == None:
+					print("No lang for source ", source)
+					exit()
+					
+				if source != "VA" and not llang in langs:
+					langs.append(llang)
+			
+			posSlash = orth.find("/")
+			if posSlash == -1:
+				if len(langs) > 1:
+					pass
+					#print(mid, orth, langs)
+				elif len(langs) == 1:
+					pass
+					#print(orth, langs[0])
+			else:
+				orths = list(map(lambda x: x.strip(), orth.split("/")))
+				
+				if len(orths) == 2:
+					# if abs(len(orths[0]) - len(orths[1])) > 5:
+						# print(mid, orth)
+					if len(langs) == 2:
+						if "ita" not in langs or "fra" not in langs:
+							print(mid, langs, orth)
+					else:
+						pass
+						#print (langs, orth)
+				else:
+					pass
+					#print(mid, list(orths))
+			
+			# if i % 100 == 0:
+				# print(str(i), "/", str(len(ldata)))
+
 def pos_qid (pos):
 	if pos == "sub":
 		qid = 1084
@@ -56,10 +115,14 @@ def add_lid_to_db (id_mtype, lid, lang, cur, conn):
 	cur.execute(sql, (id_mtype, lid, lang))
 	conn.commit()
 	
+	
+conn = conn_3312("va_xxx")
+	
+get_type_list(conn)
+exit()
 
 repo = LexData.WikidataSession("FZacherl", "dosensepp")
 
-conn = conn_3312("va_xxx")
 with conn.cursor() as cur:
 	with open("C:/Users/fz/Desktop/examples.csv", "r", encoding = "utf-8-sig") as csvfile:
 		csvreader = csv.reader(csvfile, delimiter=',')
