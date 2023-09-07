@@ -1,0 +1,10 @@
+URL: https://developer.library.ethz.ch/docs/geo-graphql/1
+
+Query:
+{
+  pois (where: {NOT: {qid: null}, AND: {isArea: true}}) {
+    id,
+    name_de,
+    qid
+  }
+}
