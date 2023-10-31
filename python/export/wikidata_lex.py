@@ -1,151 +1,258 @@
-# from wikibaseintegrator import wbi_core, wbi_login, wbi_datatype
-
-# login_instance = wbi_login.Login(user='FZacherl', pwd='dosensepp')
-
-# lexeme = wbi_datatype.Lexeme("L12439", "P5185")
-
-# wd_item = wbi_core.ItemEngine(data=[lexeme])
-
-# print(wd_item)
-
-import LexData
-import csv
 import sys
+import re
+import csv
 sys.path.append(sys.path[0] + "/../lib")
 from util import conn_3312
 
-def get_type_list (conn):
+def get_lemma_langs (row):
+	res = []
+	for lemma in row["Lemmata"]:
+		if not lemma["Sprache"] in res:
+			res.append(lemma["Sprache"])
+	return res
+
+def only_langs (row, langs):
+	langs_in_row = get_lemma_langs(row)
+	
+	if len(langs) != len(langs_in_row):
+		return False
+		
+	for lang in langs:
+		if not lang in langs_in_row:
+			return False
+	
+	return True
+	
+def get_lemma_orth (row, lang):
+
+	forms = []
+	for lemma in row["Lemmata"]:
+		if lemma["Sprache"] == lang and lemma["Subvocem"] not in forms:
+			forms.append(lemma["Subvocem"])
+	
+	if len(forms) > 1:
+		raise Exception("Multiple forms for lemma for lang " + lang + ": " + str(forms))
+		
+	ret = forms[0]
+	
+	if not re.match(r"^[\w '-\-]*$", ret):
+		raise Exception("Non-letters in lemma: " + ret)
+		
+	return ret
+	
+def split_orth (orth):
+	if not re.match(r"^(\w|[ '-\-])+ / (\w|[ '-\-])+$", orth):
+		raise Exception("Cannot split " + orth)
+		
+	return orth.split(" / ")
+	
+def check_roa_orth (orth):
+	if not re.match(r"^(\w|[ '-\-])+$", orth):
+		raise Exception("Non-letters in lemma for single lexem: " + orth)
+	
+	return orth
+		
+
+if __name__ == "__main__":
+	conn = conn_3312("va_xxx")
+
 	with conn.cursor() as cur:
-		sql = "SELECT DISTINCT Id_Type, Type FROM z_ling WHERE Type_Kind = 'L' ORDER BY Id_Type ASC"
+		sql = """
+		SELECT DISTINCT Id_morph_Typ, Orth, mt.Sprache AS MSprache, Wortart, Genus, x.Sprache AS BSprache, Subvocem, Abkuerzung
+		FROM morph_typen mt 
+			LEFT JOIN 
+				(SELECT ID_morph_Typ, Sprache, Subvocem, Abkuerzung 
+					FROM vtbl_morph_typ_lemma vmtl
+						JOIN lemmata l USING (Id_Lemma)
+						JOIN bibliographie b ON Abkuerzung = l.Quelle
+				WHERE Subvocem != '<vacat>' AND Abkuerzung != 'VA') x USING (Id_morph_Typ)
+		WHERE mt.Quelle = 'VA' AND mt.Wortart != 'Satz' AND mt.Orth != 'IGNORE' AND mt.Orth NOT LIKE '%2' AND ID_morph_Typ IN (38987,38164,7137,5278,3237,4004,27446,17504,10296,1746,52865,9562,29100,52735,23722,43093,4086,26826,30968,46809)
+		ORDER BY ID_morph_Typ ASC"""
+		
+		idm = False
 		cur.execute(sql)
-		ldata = cur.fetchall()
+		data_gr = {}
+		lemmata = []
+		prev = []
 		
-		sql = "SELECT DISTINCT Id_morph_Typ, l.Quelle, Sprache FROM VTBL_morph_Typ_Lemma JOIN Lemmata l USING (Id_Lemma) JOIN Bibliographie ON Abkuerzung = l.Quelle WHERE Subvocem != '<vacat>'"
-		cur.execute(sql)
-		refData = cur.fetchall()
-		
-		refMap = {}
-		for (mid, source, lang) in refData:
-			if mid not in refMap:
-				refMap[mid] = []
-				
-			refMap[mid].append((source, lang))
-		
-		for (i, data) in enumerate(ldata):
-			mid = data[0]
-			orth = data[1]
-			
-			lemma_langs = refMap.get(mid, [])
-			
-			langs = []
-			for (source, llang) in lemma_langs:
-				if source != "VA" and llang == None:
-					print("No lang for source ", source)
-					exit()
+		for row in cur.fetchall():
+			if idm != row[0]:
+				if idm != False:
+					data_gr[idm] = {
+						"Orth" : prev[1],
+						"Sprache" : prev[2],
+						"Wortart" : prev[3],
+						"Genus" : prev[4],
+						"Lemmata" : lemmata
+					}
+					lemmata = []
 					
-				if source != "VA" and not llang in langs:
-					langs.append(llang)
-			
-			posSlash = orth.find("/")
-			if posSlash == -1:
-				if len(langs) > 1:
-					pass
-					#print(mid, orth, langs)
-				elif len(langs) == 1:
-					pass
-					#print(orth, langs[0])
-			else:
-				orths = list(map(lambda x: x.strip(), orth.split("/")))
+				idm = row[0]
+			if row[6] and not row[5]:
+				raise Exception("No lang for source " + row[7])
+			if row[6]:
+				if row[2] != "gem" or row[5] in ("deu", "bar"):
+					sv = row[6]
+					
+					if row[7] == "DRG":
+						sv = sv.lower()
+						if sv.endswith(" i"):
+							sv = sv[0:-2]
+						if sv.endswith(" ii"):
+							sv = sv[0:-3]
+						if sv.endswith(" iii"):
+							sv = sv[0:-4]
 				
-				if len(orths) == 2:
-					# if abs(len(orths[0]) - len(orths[1])) > 5:
-						# print(mid, orth)
-					if len(langs) == 2:
-						if "ita" not in langs or "fra" not in langs:
-							print(mid, langs, orth)
+					lemmata.append({
+						"Sprache" : row[5],
+						"Subvocem" : sv
+					})
+			prev = row
+			
+		data_gr[idm] = {
+			"Orth" : prev[1],
+			"Sprache" : prev[2],
+			"Wortart" : prev[3],
+			"Genus" : prev[4],
+			"Lemmata" : lemmata
+		}
+		
+		res = []
+		roaWithoutLemma = []
+		deuWithoutLemma = []
+		itFrWithOneForm = []
+		invalidita = []
+		invalidfra = []
+		invalidlld = []
+		invalidroh = []
+		invalidbar = []
+		
+		for key in data_gr:
+			row = data_gr[key]
+			if row["Sprache"] == "sla":
+				res.append([key, row["Orth"], row["Sprache"], row["Genus"], row["Wortart"], "slv", row["Orth"]])
+			elif row["Sprache"] == "gem" and (len(row["Lemmata"]) == 0 or only_langs(row, ["deu"])):
+				if len(row["Lemmata"]) == 0:
+					deuWithoutLemma.append([key, row["Orth"]])
+				else:
+					res.append([key, row["Orth"], row["Sprache"], row["Genus"], row["Wortart"], "deu", row["Orth"]])
+			elif row["Sprache"] == "gem" and only_langs(row, ["bar"]):
+				res.append([key, row["Orth"], row["Sprache"], row["Genus"], row["Wortart"], "bar", row["Orth"]])
+			elif row["Sprache"] == "gem" and only_langs(row, ["deu", "bar"]):
+				res.append([key, row["Orth"], row["Sprache"], row["Genus"], row["Wortart"], "deu", row["Orth"]])
+				try:
+					res.append([key, row["Orth"], row["Sprache"], row["Genus"], row["Wortart"], "bar", get_lemma_orth(row, "bar")])
+				except Exception as e:
+					invalidbar.append(e)
+			elif row["Sprache"] == "roa":
+				langs = get_lemma_langs(row)
+				
+				try:
+					(fra, ita) = split_orth(row["Orth"])
+					
+					if only_langs(row, ["lld", "roh"]):
+						res.append([key, row["Orth"], row["Sprache"], row["Genus"], row["Wortart"], "lld", fra])
+						res.append([key, row["Orth"], row["Sprache"], row["Genus"], row["Wortart"], "roh", ita])
+						langs = []
 					else:
-						pass
-						#print (langs, orth)
-				else:
-					pass
-					#print(mid, list(orths))
-			
-			# if i % 100 == 0:
-				# print(str(i), "/", str(len(ldata)))
-
-def pos_qid (pos):
-	if pos == "sub":
-		qid = 1084
-	elif pos == "v":
-		qid = 24905
-	else:
-		raise Exception("POS not connected to QID: " + pos)
-		
-	return "Q" + str(qid)
-	
-def gender_qid (gender):
-	if gender == "m":
-		qid = 499327
-	elif gender == "f":
-		qid = 1775415
-	elif gender == "n":
-		qid = 1775461
-	else:
-		raise Exception("Gender not connected to QID: " + gender)
-		
-	return "Q" + str(qid)
-	
-def wd_lang (iso3):
-	if iso3 == "fra":
-		return "fr"
-	elif iso3 == "ita":
-		return "it"
-	elif iso3 == "deu":
-		return "de"
-	elif iso3 == "slv":
-		return "sl"
-	elif iso3 == "roh":
-		return "rm"
-		
-	raise Exception("Lang not connected to wikidata lang abbreviation: " + iso3)
-	
-
-def add_lid_to_db (id_mtype, lid, lang, cur, conn):
-	sql = "INSERT IGNORE INTO lids (Id_morph_Typ, LID, Sprache) VALUES (%s, %s, %s)"
-	cur.execute(sql, (id_mtype, lid, lang))
-	conn.commit()
-	
-	
-conn = conn_3312("va_xxx")
-	
-get_type_list(conn)
-exit()
-
-repo = LexData.WikidataSession("FZacherl", "dosensepp")
-
-with conn.cursor() as cur:
-	with open("C:/Users/fz/Desktop/examples.csv", "r", encoding = "utf-8-sig") as csvfile:
-		csvreader = csv.reader(csvfile, delimiter=',')
-		for row in csvreader:
-			lang = LexData.Language(wd_lang(row[2]), "Q" + row[3])
-			pos = pos_qid(row[4])
-			existing = LexData.search_lexemes(repo, row[1], lang, pos)
-			
-			if len(existing) > 0:
-				if len(existing) == 1:
-					print("Existing")
-					lex = existing[0]
-					add_lid_to_db(row[0], lex["id"][1:], row[2], cur, conn)
-					
-				else:
-					print("Multiple")
-			else:
-				print ("Create", row[2], row[1])
-				lex = LexData.create_lexeme(repo, row[1], lang, pos)
-				print(lex)
+						res.append([key, row["Orth"], row["Sprache"], row["Genus"], row["Wortart"], "fra", fra])
+						res.append([key, row["Orth"], row["Sprache"], row["Genus"], row["Wortart"], "ita", ita])
+						
+						if "ita" in langs:
+							langs.remove("ita")
+						if "fra" in langs:
+							langs.remove("fra")
+				except:
+					if len(langs) == 0:
+						#roaWithoutLemma.append([key, row["Orth"]])
+						res.append([key, row["Orth"], row["Sprache"], row["Genus"], row["Wortart"], "ita", row["Orth"]])
+						continue
 				
-				if row[5]:
-					lex.addClaims({"P5185": [gender_qid(row[5])]})
+				if "ita" in langs and "fra" in langs:
+					try:
+						(fra, ita) = split_orth(row["Orth"])
+						res.append([key, row["Orth"], row["Sprache"], row["Genus"], row["Wortart"], "fra", fra])
+						res.append([key, row["Orth"], row["Sprache"], row["Genus"], row["Wortart"], "ita", ita])
+						langs.remove("fra")
+						langs.remove("ita")
+					except:
+						itFrWithOneForm.append([key, row["Orth"]])
+				
+				if "ita" in langs:
+					try:
+						res.append([key, row["Orth"], row["Sprache"], row["Genus"], row["Wortart"], "ita", check_roa_orth(row["Orth"])])
+					except Exception as e:
+						invalidita.append(e)
 					
-				add_lid_to_db(row[0], lex["id"][1:], row[2], cur, conn)
+				if "fra" in langs:
+					try:
+						res.append([key, row["Orth"], row["Sprache"], row["Genus"], row["Wortart"], "fra", check_roa_orth(row["Orth"])])
+					except Exception as e:
+						invalidfra.append(e)
+					
+				if "lld" in langs:
+					try:
+						res.append([key, row["Orth"], row["Sprache"], row["Genus"], row["Wortart"], "lld", get_lemma_orth(row, "lld")])
+					except Exception as e:
+						invalidlld.append(e)
+					
+				if "roh" in langs:
+					try:
+						res.append([key, row["Orth"], row["Sprache"], row["Genus"], row["Wortart"], "roh", get_lemma_orth(row, "roh")])
+					except Exception as e:
+						invalidroh.append(e)
+			else:
+				raise Exception("Cannot handle " + str(row))
 			
+		with open("errors.txt", "w", encoding="utf8") as errorFile:
+			print("Roa without lemma", file=errorFile)
+			for x in roaWithoutLemma:
+				print(x, file=errorFile)
+			print("\n", file=errorFile)
+
+			print("Deu without lemma", file=errorFile)
+			for x in deuWithoutLemma:
+				print(x, file=errorFile)
+			print("\n", file=errorFile)
+			
+			print("Roa with it/fr but no slash", file=errorFile)
+			for x in itFrWithOneForm:
+				print(x, file=errorFile)
+			print("\n", file=errorFile)
+			
+			print("Invalid ita", file=errorFile)
+			for x in invalidita:
+				print(x, file=errorFile)
+			print("\n", file=errorFile)
+			
+			print("Invalid fra", file=errorFile)
+			for x in invalidfra:
+				print(x, file=errorFile)
+			print("\n", file=errorFile)
+			
+			print("Invalid lld", file=errorFile)
+			for x in invalidlld:
+				print(x, file=errorFile)
+			print("\n", file=errorFile)
+			
+			print("Invalid roh", file=errorFile)
+			for x in invalidroh:
+				print(x, file=errorFile)
+			print("\n", file=errorFile)
+			
+			print("Invalid bar", file=errorFile)
+			for x in invalidbar:
+				print(x, file=errorFile)
+			print("\n", file=errorFile)
+				
+		with open("res.csv", "w", encoding="utf8", newline="") as resFile:
+			csvwriter = csv.writer(resFile)
+			csvwriter.writerow(["ID", "Orth", "Sprachfamilie", "Genus", "Wortart", "Sprache Wikidata", "Lexem Wikidata"])
+			last_id = False
+			for row in res:
+				if row[0] == last_id:
+					csvwriter.writerow(["", "", "", "", "", row[5], row[6]])
+				else:
+					csvwriter.writerow(row)
+				last_id = row[0]
+		
